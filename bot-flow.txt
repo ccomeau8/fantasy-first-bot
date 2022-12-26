@@ -1,0 +1,14 @@
+Bot initialize:
+- Add commands
+- Sync
+
+Draft start:
+- get sheet based on given event id
+- start draft loop
+
+Each draft:
+- send discord chooser
+- get response
+- send pick to corresponding sheet
+- increment indices
+- notify next drafter
