@@ -1,7 +1,9 @@
+import sys
+
 import discord
 import random
 import asyncio
-import concurrent
+# import concurrent
 import logging
 import inspect
 from typing import Dict, Literal
@@ -20,10 +22,11 @@ TEAMS_COL = 2
 TEAMS_FIRST_ROW = 4
 MAX_NUM_TEAMS = 100
 EVENT_ID_CELL = 'C2'
+MAX_DISCORD_SELECTORS = 25
 
 
 class EventDraft:
-    def __init__(self, event_page: pygsheets.Worksheet, draft_channel):
+    def __init__(self, event_page: pygsheets.Worksheet, draft_channel: discord.TextChannel):
         logging.log(logging.DEBUG,
                     f"Starting draft in channel {draft_channel.name} using sheet page {event_page.title}")
         self.draft_channel = draft_channel
@@ -38,7 +41,7 @@ class EventDraft:
 
     async def run_draft(self):
         num_drafters = len(self.drafter_names)
-        draft_list_str = '\n'.join([f'{idx+1}. {name}' for idx,name in enumerate(self.drafter_names)])
+        draft_list_str = '\n'.join([f'{idx + 1}. {name}' for idx, name in enumerate(self.drafter_names)])
         await self.draft_channel.send(f'Draft order is:\n{draft_list_str}')
         for pick_num in range(self.num_picks):
             if pick_num % 2 == 1:
@@ -46,7 +49,7 @@ class EventDraft:
             else:
                 draft_order = range(num_drafters)
 
-            for drafter_idx in draft_order:
+            for i, drafter_idx in enumerate(draft_order):
                 drafter_name = self.drafter_names[drafter_idx]
                 drafter_username = name_to_discord_username[drafter_name]
                 logger.debug(f"{self.draft_channel.members=} {drafter_username[0]=} {drafter_username[1]=}")
@@ -56,19 +59,31 @@ class EventDraft:
                 await self.draft_channel.send(
                     f'Current drafter is {drafter_user.mention}')
 
-                # Create the view containing our dropdown
-                view = DropdownView(self.teams_left)
+                dropdown_view = DropdownView(self.teams_left)
 
+                next_pick_too = ""
+                if i == num_drafters - 1 and pick_num != self.num_picks - 1:
+                    next_pick_too = ", you are also picking again next"
                 # Sending a message containing our view
-                pick_msg = await drafter_user.send(f'It is your pick for {self.event_page.title} (pick #{pick_num + 1}):', view=view)
+                pick_msg = await drafter_user.send(
+                    f'It is your pick for {self.event_page.title} (pick #{pick_num + 1}){next_pick_too}:', view=dropdown_view)
 
-                # Wait for value from team picker callback
-                await view.dropdown.pick_team_num_future
-                picked_team_num = view.dropdown.pick_team_num_future.result()
+                # Wait for value from one of the team pickers' callback
+                try:
+                    done, pending = await asyncio.wait(dropdown_view.callback_futures, return_when=asyncio.FIRST_COMPLETED)
+                except KeyboardInterrupt as e:
+                    logger.info(f"Interrupt signal sent, shutting down")
+                    await pick_msg.delete()
+                    logger.debug(f"Message deleted")
+                    sys.exit()
 
-                # Replace picker so multiple teams cannot be selected and to provide feedback of success
-                await pick_msg.edit(content=f"You selected team **{picked_team_num}** for {self.event_page.title} pick #{pick_num + 1}", view=None)
-                del view.dropdown.pick_team_num_future
+                logging.debug(f"{done=}")
+                picked_team_num = list(done)[0].result()
+
+                # Replace picker so multiple teams cannot be selected and to provide feedback of successful pick
+                await pick_msg.edit(
+                    content=f"You selected team **{picked_team_num}** for {self.event_page.title} pick #{pick_num + 1}",
+                    view=None)
 
                 logging.log(logging.DEBUG, f"{drafter_name} picked {picked_team_num}")
                 self.event_page.update_value((DRAFT_FIRST_ROW + drafter_idx, DRAFTER_COL + 1 + pick_num * 2),
@@ -77,43 +92,43 @@ class EventDraft:
 
                 await self.draft_channel.send(f'{drafter_user.nick} has picked team {picked_team_num}')
         logger.info("Draft has finished!")
-        await self.draft_channel.send(f'@everyone Draft for {self.event_page.title} has finished!\nSee completed event page below:\n{self.event_page.url}')
+        await self.draft_channel.send(
+            f'@everyone Draft for {self.event_page.title} has finished!\nSee completed event page below:\n{self.event_page.url}')
 
     # def stop_draft(self):
     #     print(f"Ending draft {self.event_id}")
-
-
-class Dropdown(discord.ui.Select):
-    def __init__(self, teams_left: list[int]):
-        self.pick_team_num_future = asyncio.get_event_loop().create_future()
-        # Set the options that will be presented inside the dropdown
-        options = [discord.SelectOption(label=str(team_num)) for team_num in teams_left]
-        options = options[:25]
-
-        # options = [
-        #     discord.SelectOption(label='Red', description='Your favourite colour is red', emoji='🟥'),
-        #     discord.SelectOption(label='Green', description='Your favourite colour is green', emoji='🟩'),
-        #     discord.SelectOption(label='Blue', description='Your favourite colour is blue', emoji='🟦'),
-        # ]
-        # The placeholder is what will be shown when no option is chosen
-        # The min and max values indicate we can only pick one of the three options
-        # The options parameter defines the dropdown options. We defined this above
-        super().__init__(placeholder='Select your next pick:', min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        team_num = int(self.values[0])
-
-        # await interaction.delete_original_response()
-        self.pick_team_num_future.set_result(team_num)
 
 
 class DropdownView(discord.ui.View):
     def __init__(self, teams_left: list[int]):
         super().__init__()
 
-        # Adds the dropdown to our view object.
-        self.dropdown = Dropdown(teams_left)
-        self.add_item(self.dropdown)
+        # Create the view containing our dropdown
+        self.callback_futures = []
+
+        for i, team_index in enumerate(
+                range(0, len(teams_left), 25)):  # 25 is the max number of options in a dropdown on Discord
+            # Adds the dropdown to our view object.
+            curr_dropdown = Dropdown(teams_left[team_index:team_index + 25], row=i)
+            self.add_item(curr_dropdown)
+            self.callback_futures.append(curr_dropdown.pick_team_num_future)
+            # self.dropdown = Dropdown(teams_left, row)
+
+
+class Dropdown(discord.ui.Select):
+    def __init__(self, teams_left: list[int], row=0):
+        self.pick_team_num_future = asyncio.get_event_loop().create_future()
+        # Set the options that will be presented inside the dropdown
+        options = [discord.SelectOption(label=str(team_num)) for team_num in teams_left]
+        options = options[:25]
+
+        super().__init__(placeholder=f'Select your next pick: ({teams_left[0]} - {teams_left[-1]})', min_values=1, max_values=1, options=options, row=row)
+
+    async def callback(self, interaction: discord.Interaction):
+        team_num = int(self.values[0])
+
+        # await interaction.delete_original_response()
+        self.pick_team_num_future.set_result(team_num)
 
 
 class FirstBot(commands.Bot):
@@ -129,7 +144,7 @@ class FirstBot(commands.Bot):
     _bot_instance = None
 
     @classmethod
-    async def CreateFirstBot(cls):
+    async def create_first_bot(cls):
         if cls._bot_instance:
             return cls._bot_instance
         bot_instance = FirstBot()
@@ -226,8 +241,8 @@ event_map: dict[str, pygsheets.Worksheet] = {event_page.cell(EVENT_ID_CELL).valu
 #     # bot = FirstBot()
 #     # await bot.sync()
 
-loop = asyncio.get_event_loop()
-bot = loop.run_until_complete(FirstBot.CreateFirstBot())
+# loop = asyncio.new_event_loop()
+bot: FirstBot = asyncio.run(FirstBot.create_first_bot())
 
 
 @bot.hybrid_command()
@@ -253,12 +268,19 @@ async def sync(ctx: commands.Context):
 # @app_commands.choices(event_ids=[app_commands.Choice(name=event_id, value=event_id) for event_id in event_map.keys()])
 async def start_draft(interaction: discord.Interaction, event_id: Literal[tuple(event_map.keys())]):
     """Starts a Fantasy FIRST draft with the given event ID"""
-    logger.debug(f"{interaction.guild=}")
     if event_id in bot.current_drafts:
-        await interaction.response.send_mesage(f'Draft already exists for event **{event_id}**, use `/stop_draft {event_id}` to end draft')
+        await interaction.response.send_message(
+            f'Draft already exists for event **{event_id}**, use `/stop_draft {event_id}` to end draft', ephemeral=True)
         return
 
-    await interaction.channel.send(f'Starting Fantasy FIRST draft for event **{event_id}**')
+    if not isinstance(interaction.channel, discord.TextChannel):
+        logger.info(f"Start draft must be invoked in a text channel")
+        await interaction.response.send_message(f"Start draft must be invoked in a text channel", ephemeral=True)
+        return
+
+    await interaction.response.send_message(f'Starting Fantasy FIRST draft for event **{event_id}**')
+    logger.debug(f"{interaction.guild=}")
+
     event_page = event_map[event_id]
 
     # Handle sheet data loading and draft var resets
@@ -266,6 +288,7 @@ async def start_draft(interaction: discord.Interaction, event_id: Literal[tuple(
 
     bot.current_drafts[event_id] = draft
     await draft.run_draft()
+    del bot.current_drafts[event_id]
 
 
 @bot.hybrid_command()
