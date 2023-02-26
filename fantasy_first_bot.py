@@ -24,6 +24,8 @@ MAX_NUM_TEAMS = 100
 EVENT_ID_CELL = 'C2'
 MAX_DISCORD_SELECTORS = 25
 
+ADMIN_ROLE_NAME = "Bot Admin"
+AVATAR_FILEPATH = 'avatar.jpg'
 
 class EventDraft:
     def __init__(self, event_page: pygsheets.Worksheet, draft_channel: discord.TextChannel):
@@ -37,40 +39,47 @@ class EventDraft:
         self.drafter_names = event_page.get_values((DRAFT_FIRST_ROW, DRAFTER_COL),
                                                    (DRAFT_FIRST_ROW + MAX_NUM_DRAFTERS, DRAFTER_COL))
         self.drafter_names = [names[0] for names in self.drafter_names]
+        for name in self.drafter_names:
+            if discord.utils.get(self.draft_channel.members, nick=name) is None:
+                raise LookupError(f"User \"{name}\" not found in current draft channel, cannot create draft")
         self.num_picks = 3
+        self.pick_num = 0
+        self.current_drafter_user: discord.Member = None
 
     async def run_draft(self):
         num_drafters = len(self.drafter_names)
         draft_list_str = '\n'.join([f'{idx + 1}. {name}' for idx, name in enumerate(self.drafter_names)])
         await self.draft_channel.send(f'Draft order is:\n{draft_list_str}')
-        for pick_num in range(self.num_picks):
-            if pick_num % 2 == 1:
+        for self.pick_num in range(self.num_picks):
+            if self.pick_num % 2 == 1:
                 draft_order = reversed(range(num_drafters))
             else:
                 draft_order = range(num_drafters)
 
             for i, drafter_idx in enumerate(draft_order):
                 drafter_name = self.drafter_names[drafter_idx]
-                drafter_username = name_to_discord_username[drafter_name]
-                logger.debug(f"{self.draft_channel.members=} {drafter_username[0]=} {drafter_username[1]=}")
-                drafter_user = discord.utils.get(self.draft_channel.members, name=drafter_username[0],
-                                                 discriminator=drafter_username[1])
-
+                # drafter_username = name_to_discord_username[drafter_name]
+                # self.current_drafter_user = discord.utils.get(self.draft_channel.members, name=drafter_username[0],
+                #                                               discriminator=drafter_username[1])
+                self.current_drafter_user = discord.utils.get(self.draft_channel.members, nick=drafter_name)
+                logger.debug(f"{self.draft_channel.members=} {self.current_drafter_user.name}")
                 await self.draft_channel.send(
-                    f'Current drafter is {drafter_user.mention}')
+                    f'Current drafter is {self.current_drafter_user.mention}')
 
                 dropdown_view = DropdownView(self.teams_left)
 
                 next_pick_too = ""
-                if i == num_drafters - 1 and pick_num != self.num_picks - 1:
+                if i == num_drafters - 1 and self.pick_num != self.num_picks - 1:
                     next_pick_too = ", you are also picking again next"
                 # Sending a message containing our view
-                pick_msg = await drafter_user.send(
-                    f'It is your pick for {self.event_page.title} (pick #{pick_num + 1}){next_pick_too}:', view=dropdown_view)
+                pick_msg = await self.current_drafter_user.send(
+                    f'It is your pick for {self.event_page.title} (pick #{self.pick_num + 1}){next_pick_too}:',
+                    view=dropdown_view)
 
                 # Wait for value from one of the team pickers' callback
                 try:
-                    done, pending = await asyncio.wait(dropdown_view.callback_futures, return_when=asyncio.FIRST_COMPLETED)
+                    done, pending = await asyncio.wait(dropdown_view.callback_futures,
+                                                       return_when=asyncio.FIRST_COMPLETED)
                 except KeyboardInterrupt as e:
                     logger.info(f"Interrupt signal sent, shutting down")
                     await pick_msg.delete()
@@ -82,15 +91,15 @@ class EventDraft:
 
                 # Replace picker so multiple teams cannot be selected and to provide feedback of successful pick
                 await pick_msg.edit(
-                    content=f"You selected team **{picked_team_num}** for {self.event_page.title} pick #{pick_num + 1}",
+                    content=f"You selected team **{picked_team_num}** for {self.event_page.title} pick #{self.pick_num + 1}",
                     view=None)
 
                 logging.log(logging.DEBUG, f"{drafter_name} picked {picked_team_num}")
-                self.event_page.update_value((DRAFT_FIRST_ROW + drafter_idx, DRAFTER_COL + 1 + pick_num * 2),
+                self.event_page.update_value((DRAFT_FIRST_ROW + drafter_idx, DRAFTER_COL + 1 + self.pick_num * 2),
                                              str(picked_team_num))
                 self.teams_left.remove(picked_team_num)
 
-                await self.draft_channel.send(f'{drafter_user.nick} has picked team {picked_team_num}')
+                await self.draft_channel.send(f'{self.current_drafter_user.nick} has picked team {picked_team_num}')
         logger.info("Draft has finished!")
         await self.draft_channel.send(
             f'@everyone Draft for {self.event_page.title} has finished!\nSee completed event page below:\n{self.event_page.url}')
@@ -122,7 +131,8 @@ class Dropdown(discord.ui.Select):
         options = [discord.SelectOption(label=str(team_num)) for team_num in teams_left]
         options = options[:25]
 
-        super().__init__(placeholder=f'Select your next pick: ({teams_left[0]} - {teams_left[-1]})', min_values=1, max_values=1, options=options, row=row)
+        super().__init__(placeholder=f'Select your next pick: ({teams_left[0]} - {teams_left[-1]})', min_values=1,
+                         max_values=1, options=options, row=row)
 
     async def callback(self, interaction: discord.Interaction):
         team_num = int(self.values[0])
@@ -155,6 +165,8 @@ class FirstBot(commands.Bot):
         await self.wait_until_ready()
         print(f'Logged in as {self.user} (ID: {self.user.id})')
         print('------')
+        with open(AVATAR_FILEPATH, 'rb') as image:
+            await self.user.edit(avatar=image.read())
         await self.tree.sync()
 
     async def setup_hook(self) -> None:
@@ -210,8 +222,9 @@ class FirstBot(commands.Bot):
         pass
 
 
-with open("keys/name_to_discord_usernames.json", "r") as names_file:
-    name_to_discord_username = json.load(names_file)
+# TODO Remove
+# with open("keys/name_to_discord_usernames.json", "r") as names_file:
+#     name_to_discord_username = json.load(names_file)
 
 with open("keys/FF-token.txt", "r") as token_file:
     token = token_file.readline()[:-1]
@@ -245,14 +258,10 @@ event_map: dict[str, pygsheets.Worksheet] = {event_page.cell(EVENT_ID_CELL).valu
 bot: FirstBot = asyncio.run(FirstBot.create_first_bot())
 
 
-@bot.hybrid_command()
-async def test(ctx: commands.Context):
-    """Test command"""
-    logger.debug("Test command")
-    await ctx.send(f' Test Command')
 
 
-@bot.hybrid_command(name='sync', description='Owner only')
+@bot.hybrid_command(name='sync', description='Bot Admins only')
+@commands.has_role("Bot Admin")
 async def sync(ctx: commands.Context):
     await bot.tree.sync()
     logger.debug('Command tree synced.')
@@ -261,11 +270,12 @@ async def sync(ctx: commands.Context):
 
 # options = [discord.SelectOption(label=str(team_num)) for team_num in teams_left]
 
-
+# TODO Change to use command.check()
 # @bot.hybrid_command()
 @bot.tree.command()
 # @app_commands.command()
 # @app_commands.choices(event_ids=[app_commands.Choice(name=event_id, value=event_id) for event_id in event_map.keys()])
+@commands.has_role(ADMIN_ROLE_NAME)
 async def start_draft(interaction: discord.Interaction, event_id: Literal[tuple(event_map.keys())]):
     """Starts a Fantasy FIRST draft with the given event ID"""
     if event_id in bot.current_drafts:
@@ -277,14 +287,23 @@ async def start_draft(interaction: discord.Interaction, event_id: Literal[tuple(
         logger.info(f"Start draft must be invoked in a text channel")
         await interaction.response.send_message(f"Start draft must be invoked in a text channel", ephemeral=True)
         return
+    bot_admin_role = discord.utils.get(interaction.guild.roles, name=ADMIN_ROLE_NAME)
+    if bot_admin_role not in interaction.user.roles:
+        await interaction.response.send_message(f"Only bot admins can invoke this command", ephemeral=True)
+        return
 
-    await interaction.response.send_message(f'Starting Fantasy FIRST draft for event **{event_id}**')
     logger.debug(f"{interaction.guild=}")
 
     event_page = event_map[event_id]
 
     # Handle sheet data loading and draft var resets
-    draft = EventDraft(event_page, interaction.channel)
+    try:
+        draft = EventDraft(event_page, interaction.channel)
+    except LookupError as err:
+        await interaction.response.send_message(str(err), ephemeral=True)
+        return
+
+    await interaction.response.send_message(f'Starting Fantasy FIRST draft for event **{event_id}**')
 
     bot.current_drafts[event_id] = draft
     await draft.run_draft()
@@ -292,6 +311,7 @@ async def start_draft(interaction: discord.Interaction, event_id: Literal[tuple(
 
 
 @bot.hybrid_command()
+@commands.is_owner()
 async def stop_draft(ctx: commands.Context, event_id: str):
     """Stops a Fantasy FIRST draft with the given event ID"""
 
@@ -302,6 +322,15 @@ async def stop_draft(ctx: commands.Context, event_id: str):
 
     bot.current_drafts.pop(event_id).stop_draft()
     await ctx.send(f' Stopped draft for event **{event_id}**')
+
+
+@bot.hybrid_command()
+async def list_drafts(ctx: commands.Context):
+    """Prints list of in-progress drafts"""
+    msg_string = "**Current drafts**\n"
+    for event_id, draft in bot.current_drafts.items():
+        msg_string += f" - {event_id}: Pick #{draft.pick_num + 1} ({draft.current_drafter_user.nick})"
+    await ctx.send(msg_string)
 
 
 print("Running bot")
