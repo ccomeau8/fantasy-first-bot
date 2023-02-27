@@ -9,9 +9,12 @@
 - [ ] Teams left list, master/distributed
 - [ ] Skip
 
+- [ ] Table of picks
 - [ ] Capability to resume draft?
-- [ ] Automatic pick ordering? 
+- [ ] Automatic pick ordering?
+
 
 - [ ] Handle invocation in incorrect channels
 - [ ] Multiple sheets
 - [ ] Pull event name from channel?
+- [ ] Event sheet identification
