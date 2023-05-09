@@ -155,7 +155,7 @@ class EventDraft:
 
 class DropdownView(discord.ui.View):
     def __init__(self, teams_left: list[int]):
-        super().__init__()
+        super().__init__(timeout=None)
 
         # Create the view containing our dropdown
         self.callback_futures = []
@@ -384,7 +384,7 @@ async def list_drafts(ctx: commands.Context):
     """Prints list of in-progress drafts"""
     msg_string = "**Current drafts**\n"
     for event_id, draft in bot.current_drafts.items():
-        msg_string += f" - {event_id}: Round #{(draft.pick_num // len(draft.drafter_names)) + 1} ({draft.current_drafter_user.nick})"
+        msg_string += f" - {event_id}: Round #{(draft.pick_num // len(draft.drafter_names)) + 1} ({draft.current_drafter_user.nick})\n"
     await ctx.send(msg_string)
 
 
