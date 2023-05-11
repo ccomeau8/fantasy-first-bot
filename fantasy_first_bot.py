@@ -1,4 +1,5 @@
 import sys
+import typing
 
 import discord
 import random
@@ -21,6 +22,7 @@ DRAFT_FIRST_ROW = 5
 MAX_NUM_DRAFTERS = 8
 TEAMS_COL = 2
 TEAMS_FIRST_ROW = 4
+TEAM_NAME_COL = 3
 MAX_NUM_TEAMS = 100
 EVENT_ID_CELL = 'C2'
 MAX_DISCORD_SELECTORS = 25
@@ -34,6 +36,7 @@ SHEET_NAME = '2023 FF'
 
 class EventDraft:
     def __init__(self, event_page: pygsheets.Worksheet, draft_channel: discord.TextChannel):
+        self.current_msgs: typing.List[discord.Message] = []
         logging.log(logging.DEBUG,
                     f"Starting draft in channel {draft_channel.name} using sheet page {event_page.title}")
         self.draft_channel = draft_channel
@@ -41,10 +44,15 @@ class EventDraft:
         self.teams_left = event_page.get_values((TEAMS_FIRST_ROW, TEAMS_COL),
                                                 (TEAMS_FIRST_ROW + MAX_NUM_TEAMS, TEAMS_COL),
                                                 value_render=pygsheets.ValueRenderOption.UNFORMATTED_VALUE)
+        team_names = event_page.get_values((TEAMS_FIRST_ROW, TEAM_NAME_COL),
+                                                (TEAMS_FIRST_ROW + MAX_NUM_TEAMS, TEAM_NAME_COL),
+                                                value_render=pygsheets.ValueRenderOption.UNFORMATTED_VALUE)
         # print(event_page.get_values((TEAMS_FIRST_ROW, TEAMS_COL),
         #                                         (TEAMS_FIRST_ROW + MAX_NUM_TEAMS, TEAMS_COL), value_render=pygsheets.ValueRenderOption.UNFORMATTED_VALUE))
         self.all_teams = [team[0] for team in self.teams_left]
         self.teams_left = [team[0] for team in self.teams_left]
+        team_names = [name[0] for name in team_names]
+        self.team_name_dict = {num: name for num, name in zip(self.all_teams, team_names)}
         self.drafter_names = event_page.get_values((DRAFT_FIRST_ROW, DRAFTER_COL),
                                                    (DRAFT_FIRST_ROW + MAX_NUM_DRAFTERS, DRAFTER_COL))
         self.drafter_names = [names[0] for names in self.drafter_names]
@@ -63,6 +71,8 @@ class EventDraft:
         for start_pick in range(self.num_picks * num_drafters):
             round_num = start_pick // num_drafters
             drafter_idx = start_pick % num_drafters
+
+            # If it is a reverse order round
             if round_num % 2 == 1:
                 drafter_idx = (num_drafters - 1) - drafter_idx
             picked_team_num = self.event_page.get_value(
@@ -73,47 +83,49 @@ class EventDraft:
             self.teams_left.remove(picked_team_num)
         draft_list_str = '\n'.join([f'{idx + 1}. {name}' for idx, name in enumerate(self.drafter_names)])
         draft_order_msg = await self.draft_channel.send(f'Draft order is:\n{draft_list_str}')
+        self.current_msgs.append(draft_order_msg)
 
-        teams_left_str = "Teams Left:\n" + "\n".join(
-            [f'{team_num}' if team_num in self.teams_left else f'~~{team_num}~~' for team_num in self.all_teams])
-        teams_left_msg = await self.draft_channel.send(teams_left_str)
+        # teams_left_str = "Teams Left:\n" + "\n".join(
+        #     [f'{team_num}' if team_num in self.teams_left else f'~~{team_num}~~' for team_num in self.all_teams])
+        # teams_left_msg = await self.draft_channel.send(teams_left_str)
         for self.pick_num in range(start_pick, self.num_picks * num_drafters):
             round_num = self.pick_num // num_drafters
             drafter_idx = self.pick_num % num_drafters
             if round_num % 2 == 1:
                 drafter_idx = (num_drafters - 1) - drafter_idx
-            # if self.pick_num % 2 == 1:
-            #     round_order = reversed(range(num_drafters))
-            # else:
-            #     round_order = range(num_drafters)
-
-            # for i, drafter_idx in enumerate(round_order):
             drafter_name = self.drafter_names[drafter_idx]
-            # drafter_username = name_to_discord_username[drafter_name]
-            # self.current_drafter_user = discord.utils.get(self.draft_channel.members, name=drafter_username[0],
-            #                                               discriminator=drafter_username[1])
+
             self.current_drafter_user = discord.utils.get(self.draft_channel.members, nick=drafter_name)
             logger.debug(f"{self.draft_channel.members=} {self.current_drafter_user.name}")
             current_msg = await self.draft_channel.send(
-                f'Current drafter is {self.current_drafter_user.nick}')
+                f'Current drafter is {self.current_drafter_user.mention}')
+            self.current_msgs.append(current_msg)
 
-            dropdown_view = DropdownView(self.teams_left)
-
-            next_pick_too = ""
-            if self.pick_num % num_drafters == num_drafters - 1 and round_num != self.num_picks - 1:
-                next_pick_too = ", you are also picking again next"
+            # dropdown_view = DropdownView(self.teams_left)
+            grid = ButtonGrid(teams_list=self.all_teams, teams_left=self.teams_left,
+                              current_drafter=self.current_drafter_user, team_name_dict=self.team_name_dict)
+            grid_msgs = []
+            for view in grid.views:
+                grid_msgs.append(await self.draft_channel.send(f"", view=view))
+            self.current_msgs.extend(grid_msgs)
+            # next_pick_too = ""
+            # if self.pick_num % num_drafters == num_drafters - 1 and round_num != self.num_picks - 1:
+            #     next_pick_too = ", you are also picking again next"
             # Sending a message containing our view
-            pick_msg = await self.current_drafter_user.send(
-                f'It is your pick for {self.event_page.title} (round #{round_num + 1}){next_pick_too}:',
-                view=dropdown_view)
-            dropdown_view.callback_futures.append(self.stop_future)
+            # pick_msg = await self.current_drafter_user.send(
+            #     f'It is your pick for {self.event_page.title} (round #{round_num + 1}){next_pick_too}:',
+            #     view=dropdown_view)
+            # self.current_msgs.append(pick_msg)
+            # dropdown_view.callback_futures.append(self.stop_future)
+            # dropdown_view.callback_futures.extend(grid.callback_futures)
+            grid.callback_futures.append(self.stop_future)
             # Wait for value from one of the team pickers' callback
             try:
-                done, pending = await asyncio.wait(dropdown_view.callback_futures,
+                done, pending = await asyncio.wait(grid.callback_futures,
                                                    return_when=asyncio.FIRST_COMPLETED)
             except KeyboardInterrupt as e:
                 logger.info(f"Interrupt signal sent, shutting down")
-                await pick_msg.delete()
+                # await pick_msg.delete()
                 logger.debug(f"Message deleted")
                 sys.exit()
             if self.stop_future in done:
@@ -121,36 +133,111 @@ class EventDraft:
                 logger.info("Stopping draft")
 
                 # TODO Add cleanup function
-                await pick_msg.delete()
-                await draft_order_msg.delete()
-                await teams_left_msg.delete()
-                await current_msg.delete()
+                await self.cleanup_messages()
+                # await pick_msg.delete()
+                # await draft_order_msg.delete()
+                # await teams_left_msg.delete()
+                # await current_msg.delete()
                 return
             logging.debug(f"{done=}")
             picked_team_num = list(done)[0].result()
 
-            # Replace picker so multiple teams cannot be selected and to provide feedback of successful pick
-            await pick_msg.edit(
-                content=f"You selected team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
-                view=None)
+            # # Replace picker so multiple teams cannot be selected and to provide feedback of successful pick
+            # await pick_msg.edit(
+            #     content=f"You selected team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
+            #     view=None)
 
+            await current_msg.edit(content=f"{self.current_drafter_user.nick} picked team {picked_team_num}")
+
+            # self.current_msgs.pop()
+            for idx in range(len(grid_msgs)):
+                self.current_msgs.pop()  # Remove grid messages from stack
+            self.current_msgs.pop()  # Remove previous drafter message from stack
+
+            for msg in grid_msgs:
+                await msg.delete()
+            grid_msgs.clear()
             # TODO clean up futures
 
             logging.log(logging.DEBUG, f"{drafter_name} picked {picked_team_num}")
             self.event_page.update_value((DRAFT_FIRST_ROW + drafter_idx, DRAFTER_COL + 1 + round_num * 2),
                                          str(picked_team_num))
             self.teams_left.remove(picked_team_num)
-            teams_left_str = "Teams Left:\n" + "\n".join([
-                f'{team_num}' if team_num in self.teams_left else f'~~{team_num}~~' for team_num in self.all_teams])
-            await teams_left_msg.edit(content=teams_left_str)
+            # teams_left_str = "Teams Left:\n" + "\n".join([
+            #     f'{team_num}' if team_num in self.teams_left else f'~~{team_num}~~' for team_num in self.all_teams])
+            # await teams_left_msg.edit(content=teams_left_str)
 
-            await self.draft_channel.send(f'{self.current_drafter_user.nick} has picked team {picked_team_num}')
         logger.info("Draft has finished!")
         await self.draft_channel.send(
             f'@everyone Draft for {self.event_page.title} has finished!\nSee completed event page below:\n{self.event_page.url}')
 
+    async def cleanup_messages(self):
+        for msg in self.current_msgs:
+            await msg.delete()
+        self.current_msgs.clear()
+
     def stop_draft(self):
         self.stop_future.set_result("Stop")
+
+
+class ButtonGrid:
+    def __init__(self, teams_list: list[int], teams_left: list[int], current_drafter: discord.Member, team_name_dict):
+
+        # Create the view containing our dropdown
+        self.callback_futures = []
+        self.rows = []
+        self.team_buttons = []
+        self.views = []
+
+        for i, team_index in enumerate(
+                range(0, len(teams_list), 25)):  # 25 is the max number of options in a dropdown on Discord
+            # Adds the dropdown to our view object.
+            button_row_list = []
+            row_view = discord.ui.View(timeout=None)
+            for team in teams_list[team_index:team_index + 25]:
+                team_button = TeamButton(team, team not in teams_left, team_name_dict[team], current_drafter)
+                # button_row_list.append(team_button)
+                row_view.add_item(team_button)
+                # self.team_buttons.append(team_button)
+                self.callback_futures.append(team_button.click_team_future)
+            self.views.append(row_view)
+            # row = discord.ActionRow(children=button_row_list, row=i)
+            # curr_dropdown = Dropdown(teams_list[team_index:team_index + 5], row=i)
+            # self.rows.append(row)
+            # self.callback_futures.append(curr_dropdown.pick_team_num_future)
+            # self.dropdown = Dropdown(teams_left, row)
+
+    def reset_futures(
+            self):  # TODO Utilize to allow for reuse of button grid rather than regenerating a new one each time
+        self.callback_futures = []
+        for button in self.team_buttons:
+            button.reset_future()
+            self.callback_futures.append(button.click_team_future)
+
+
+class TeamButton(discord.ui.Button):
+
+    def __init__(self, team_num, picked, team_name, current_user: discord.Member):  # TODO Rework dependency on current user
+        super(TeamButton, self).__init__(style=discord.ButtonStyle.red if picked else discord.ButtonStyle.green,
+                                         label=f"{team_num:>4}\n{team_name}", disabled=picked)
+        self.team_num = team_num
+        self.picked = picked
+        self.current_user = current_user
+
+        self.click_team_future = asyncio.get_event_loop().create_future()
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user != self.current_user:
+            return await interaction.response.send_message(f"It is not your turn to pick yet!", ephemeral=True)
+
+        # await interaction.delete_original_response()
+        self.picked = True
+        print(f"Picked {self.team_num}")
+        self.click_team_future.set_result(self.team_num)
+
+    def reset_future(self):
+        del self.click_team_future
+        self.click_team_future = asyncio.get_event_loop().create_future()
 
 
 class DropdownView(discord.ui.View):
@@ -296,7 +383,8 @@ logger.addHandler(handler)
 client = pygsheets.authorize(service_account_file="keys/fantasy-first-test-372522-4d15a60bbdcb.json")
 sheet = client.open(sheet_name)
 all_pages = sheet.worksheets()
-excluded_pages = {"Master Score Sheet", "Event Template", "Old Old Event Template", "NE Top 16 Predictions", "Rules", "Draft Order Roll", "Old [2022] Event Template"}
+excluded_pages = {"Master Score Sheet", "Event Template", "Old Old Event Template", "NE Top 16 Predictions", "Rules",
+                  "Draft Order Roll", "Old [2022] Event Template"}
 # event_ids = {'2023nhgrs', '2023mabr', '2023rinsc', '2023ctwat', '2023marea', ''}
 
 event_pages = filter(lambda page: page.title not in excluded_pages, all_pages)

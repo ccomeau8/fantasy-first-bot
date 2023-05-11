@@ -4,17 +4,17 @@
 ### TODO
 - [X] Nickname = Google sheet name? Yes
 - [X] Bot admins only
-- [ ] Resync google sheet
+- [X] Resync google sheet
 - [X] Bot icon
 - [ ] Teams left list, master/distributed
 - [ ] Skip
 
 - [ ] Table of picks
-- [ ] Capability to resume draft?
+- [X] Capability to resume draft?
 - [ ] Automatic pick ordering?
 
 
 - [ ] Handle invocation in incorrect channels
 - [ ] Multiple sheets
-- [ ] Pull event name from channel?
+- [X] Pull event name from channel?
 - [ ] Event sheet identification
