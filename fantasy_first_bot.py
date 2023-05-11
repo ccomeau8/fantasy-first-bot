@@ -1,4 +1,5 @@
 import sys
+import typing
 
 import discord
 import random
@@ -21,6 +22,7 @@ DRAFT_FIRST_ROW = 5
 MAX_NUM_DRAFTERS = 8
 TEAMS_COL = 2
 TEAMS_FIRST_ROW = 4
+TEAM_NAME_COL = 3
 MAX_NUM_TEAMS = 100
 EVENT_ID_CELL = 'C2'
 MAX_DISCORD_SELECTORS = 25
@@ -34,6 +36,7 @@ SHEET_NAME = '2023 FF'
 
 class EventDraft:
     def __init__(self, event_page: pygsheets.Worksheet, draft_channel: discord.TextChannel):
+        self.current_msgs: typing.List[discord.Message] = []
         logging.log(logging.DEBUG,
                     f"Starting draft in channel {draft_channel.name} using sheet page {event_page.title}")
         self.draft_channel = draft_channel
@@ -41,10 +44,15 @@ class EventDraft:
         self.teams_left = event_page.get_values((TEAMS_FIRST_ROW, TEAMS_COL),
                                                 (TEAMS_FIRST_ROW + MAX_NUM_TEAMS, TEAMS_COL),
                                                 value_render=pygsheets.ValueRenderOption.UNFORMATTED_VALUE)
+        team_names = event_page.get_values((TEAMS_FIRST_ROW, TEAM_NAME_COL),
+                                           (TEAMS_FIRST_ROW + MAX_NUM_TEAMS, TEAM_NAME_COL),
+                                           value_render=pygsheets.ValueRenderOption.UNFORMATTED_VALUE)
         # print(event_page.get_values((TEAMS_FIRST_ROW, TEAMS_COL),
         #                                         (TEAMS_FIRST_ROW + MAX_NUM_TEAMS, TEAMS_COL), value_render=pygsheets.ValueRenderOption.UNFORMATTED_VALUE))
         self.all_teams = [team[0] for team in self.teams_left]
         self.teams_left = [team[0] for team in self.teams_left]
+        team_names = [name[0] for name in team_names]
+        self.team_name_dict = {num: name for num, name in zip(self.all_teams, team_names)}
         self.drafter_names = event_page.get_values((DRAFT_FIRST_ROW, DRAFTER_COL),
                                                    (DRAFT_FIRST_ROW + MAX_NUM_DRAFTERS, DRAFTER_COL))
         self.drafter_names = [names[0] for names in self.drafter_names]
@@ -63,6 +71,8 @@ class EventDraft:
         for start_pick in range(self.num_picks * num_drafters):
             round_num = start_pick // num_drafters
             drafter_idx = start_pick % num_drafters
+
+            # If it is a reverse order round
             if round_num % 2 == 1:
                 drafter_idx = (num_drafters - 1) - drafter_idx
             picked_team_num = self.event_page.get_value(
@@ -73,6 +83,7 @@ class EventDraft:
             self.teams_left.remove(picked_team_num)
         draft_list_str = '\n'.join([f'{idx + 1}. {name}' for idx, name in enumerate(self.drafter_names)])
         draft_order_msg = await self.draft_channel.send(f'Draft order is:\n{draft_list_str}')
+        self.current_msgs.append(draft_order_msg)
 
         teams_left_str = "Teams Left:\n" + "\n".join(
             [f'{team_num}' if team_num in self.teams_left else f'~~{team_num}~~' for team_num in self.all_teams])
@@ -82,20 +93,13 @@ class EventDraft:
             drafter_idx = self.pick_num % num_drafters
             if round_num % 2 == 1:
                 drafter_idx = (num_drafters - 1) - drafter_idx
-            # if self.pick_num % 2 == 1:
-            #     round_order = reversed(range(num_drafters))
-            # else:
-            #     round_order = range(num_drafters)
-
-            # for i, drafter_idx in enumerate(round_order):
             drafter_name = self.drafter_names[drafter_idx]
-            # drafter_username = name_to_discord_username[drafter_name]
-            # self.current_drafter_user = discord.utils.get(self.draft_channel.members, name=drafter_username[0],
-            #                                               discriminator=drafter_username[1])
+
             self.current_drafter_user = discord.utils.get(self.draft_channel.members, nick=drafter_name)
             logger.debug(f"{self.draft_channel.members=} {self.current_drafter_user.name}")
             current_msg = await self.draft_channel.send(
                 f'Current drafter is {self.current_drafter_user.nick}')
+            self.current_msgs.append(current_msg)
 
             dropdown_view = DropdownView(self.teams_left)
 
@@ -106,6 +110,7 @@ class EventDraft:
             pick_msg = await self.current_drafter_user.send(
                 f'It is your pick for {self.event_page.title} (round #{round_num + 1}){next_pick_too}:',
                 view=dropdown_view)
+            self.current_msgs.append(pick_msg)
             dropdown_view.callback_futures.append(self.stop_future)
             # Wait for value from one of the team pickers' callback
             try:
@@ -121,10 +126,11 @@ class EventDraft:
                 logger.info("Stopping draft")
 
                 # TODO Add cleanup function
-                await pick_msg.delete()
-                await draft_order_msg.delete()
-                await teams_left_msg.delete()
-                await current_msg.delete()
+                await self.cleanup_messages()
+                # await pick_msg.delete()
+                # await draft_order_msg.delete()
+                # await teams_left_msg.delete()
+                # await current_msg.delete()
                 return
             logging.debug(f"{done=}")
             picked_team_num = list(done)[0].result()
@@ -134,6 +140,8 @@ class EventDraft:
                 content=f"You selected team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
                 view=None)
 
+            self.current_msgs.pop()  # Pick msg
+            self.current_msgs.pop()  # Remove previous drafter message from stack
             # TODO clean up futures
 
             logging.log(logging.DEBUG, f"{drafter_name} picked {picked_team_num}")
@@ -148,6 +156,11 @@ class EventDraft:
         logger.info("Draft has finished!")
         await self.draft_channel.send(
             f'@everyone Draft for {self.event_page.title} has finished!\nSee completed event page below:\n{self.event_page.url}')
+
+    async def cleanup_messages(self):
+        for msg in self.current_msgs:
+            await msg.delete()
+        self.current_msgs.clear()
 
     def stop_draft(self):
         self.stop_future.set_result("Stop")
@@ -296,7 +309,8 @@ logger.addHandler(handler)
 client = pygsheets.authorize(service_account_file="keys/fantasy-first-test-372522-4d15a60bbdcb.json")
 sheet = client.open(sheet_name)
 all_pages = sheet.worksheets()
-excluded_pages = {"Master Score Sheet", "Event Template", "Old Old Event Template", "NE Top 16 Predictions", "Rules", "Draft Order Roll", "Old [2022] Event Template"}
+excluded_pages = {"Master Score Sheet", "Event Template", "Old Old Event Template", "NE Top 16 Predictions", "Rules",
+                  "Draft Order Roll", "Old [2022] Event Template"}
 # event_ids = {'2023nhgrs', '2023mabr', '2023rinsc', '2023ctwat', '2023marea', ''}
 
 event_pages = filter(lambda page: page.title not in excluded_pages, all_pages)
