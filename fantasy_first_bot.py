@@ -43,6 +43,7 @@ ACTIVE_HOURS_END_TIME = datetime.time(hour=22)
 # Based on https://developers.google.com/sheets/api/reference/rest/v4/DateTimeRenderOption
 SHEETS_SERIAL_NUMBER_DATETIME_START = datetime.datetime(1899, 12, 30)
 DATE_STRING_WIDTH = 21
+PICK_DEADLINE_SNAP_INTERVAL = 15  # Snaps picks to 15 min intervals, ex. 3:08 -> 3:15
 
 
 # BASE_TIMEZONE = datetime.timezone.tzname()
@@ -80,6 +81,7 @@ class EventDraft:
         self.current_drafter_user: discord.Member = None
         self.stop_future = asyncio.get_event_loop().create_future()
         self.draft_start_time = None
+        self.reminder_msgs = []
 
     async def run_draft(self):
         num_drafters = len(self.drafter_names)
@@ -107,14 +109,17 @@ class EventDraft:
         end_active_start_datetime = datetime.datetime.combine(self.draft_end_datetime.date(), ACTIVE_HOURS_START_TIME)
         end_active_end_datetime = datetime.datetime.combine(self.draft_end_datetime.date(), ACTIVE_HOURS_END_TIME)
 
-
         day_lengths = []
         start_day_start_time = min(start_active_end_datetime, max(start_active_start_datetime, self.draft_start_time))
         end_day_start_time = min(end_active_end_datetime, max(end_active_start_datetime, self.draft_end_datetime))
         if self.draft_start_time.date() == self.draft_end_datetime.date():  # Draft starts and ends on same day
             start_day_time_duration = end_day_start_time - start_day_start_time
+            day_lengths.append(start_day_time_duration)
             print(f"END {end_day_start_time} || {start_day_start_time}")
         else:
+            start_day_time_duration = start_active_end_datetime - start_day_start_time
+            day_lengths.append(start_day_time_duration)
+            print(f"START {start_day_start_time} || {start_active_end_datetime}")
             num_full_days = max(0,
                                 self.draft_end_datetime.day - self.draft_start_time.day + 1 - 2)  # N days minus start and end days
             full_active_duration = start_active_end_datetime - start_active_start_datetime
@@ -122,8 +127,6 @@ class EventDraft:
             day_lengths.extend([full_active_duration] * num_full_days)
             end_day_time_duration = end_day_start_time - end_active_start_datetime
             day_lengths.append(end_day_time_duration)
-            start_day_time_duration = start_active_end_datetime - start_day_start_time
-        day_lengths.append(start_day_time_duration)
 
         total_draft_time = sum(day_lengths, datetime.timedelta(0))
 
@@ -140,7 +143,8 @@ class EventDraft:
         for pick_num in range(1, num_picks_left + 1):
             pick_end_duration_point = pick_num * time_per_pick
             print(pick_num, pick_end_duration_point, day_idx)
-            while day_total + day_lengths[day_idx] < pick_end_duration_point - datetime.timedelta(seconds=1):  # Account for floating point math
+            while day_total + day_lengths[day_idx] < pick_end_duration_point - datetime.timedelta(
+                    seconds=1):  # Account for floating point math
                 day_total += day_lengths[day_idx]
                 day_idx += 1
                 print(f"New day {day_idx}")
@@ -149,35 +153,48 @@ class EventDraft:
             if day_idx == 0:
                 current_day_start_time = start_day_start_time
             else:
-                current_day_start_time = datetime.datetime.combine(self.draft_start_time.date() + datetime.timedelta(days=day_idx), ACTIVE_HOURS_START_TIME)
+                current_day_start_time = datetime.datetime.combine(
+                    self.draft_start_time.date() + datetime.timedelta(days=day_idx), ACTIVE_HOURS_START_TIME)
 
             pick_time = current_day_start_time + intraday_pick_duration
             pick_deadlines.append(pick_time)
+
+        # Round pick deadlines to nears 15 min
+        for i, deadline in enumerate(pick_deadlines):
+            discard = datetime.timedelta(minutes=deadline.minute % PICK_DEADLINE_SNAP_INTERVAL,
+                                         seconds=deadline.second,
+                                         microseconds=deadline.microsecond)
+            deadline -= discard
+            if discard >= datetime.timedelta(minutes=PICK_DEADLINE_SNAP_INTERVAL/2.0):
+                deadline += datetime.timedelta(minutes=PICK_DEADLINE_SNAP_INTERVAL)
+            pick_deadlines[i] = deadline
 
         max_len_name = max([len(name) for name in self.drafter_names])
 
         time_msg_str = f"Draft Start Time: {self.draft_start_time.strftime('%a. %b %d %I:%M%p')}\n"
         time_msg_str += f"Draft End Time: {self.draft_end_datetime.strftime('%a. %b %d %I:%M%p')}\n"
-        time_msg_str += f"Time per pick: {time_per_pick.seconds//3600}hr {(time_per_pick.seconds % 3600)//60:0>2}min\n"
+        time_msg_str += f"Approximate time per pick: {time_per_pick.seconds // 3600}hr {(time_per_pick.seconds % 3600) // 60:0>2}min\n"
         # print(f"Time per pick: {time_per_pick}")
 
         pick_cell_str_table = []
         for drafter_idx in range(num_drafters):
             pick_cell_row_list = []
             for round_num in range(self.num_picks):
-                pick_num = round_num * num_drafters + (drafter_idx if round_num % 2 == 0 else (num_drafters - 1) - drafter_idx)
+                pick_num = round_num * num_drafters + (
+                    drafter_idx if round_num % 2 == 0 else (num_drafters - 1) - drafter_idx)
                 if pick_num < start_pick:
                     cell_str = f"|{picked_teams[pick_num]:^{DATE_STRING_WIDTH}}"
                 else:
-                    deadline = pick_deadlines[pick_num-start_pick]
+                    deadline = pick_deadlines[pick_num - start_pick]
                     cell_str = f"| {deadline.strftime('%a. %b %d %I:%M%p')} "
                 pick_cell_row_list.append(cell_str)
 
             pick_cell_str_table.append(pick_cell_row_list)
 
-        round_title_str = '|'.join([f"{f'Round {round_num+1}':^{DATE_STRING_WIDTH}}" for round_num in range(self.num_picks)])
-        title_line = f"{'Name':^{max_len_name+1}}|{round_title_str}"
-        title_line = f"```\n{title_line}\n{'-'*len(title_line)}\n"
+        round_title_str = '|'.join(
+            [f"{f'Round {round_num + 1}':^{DATE_STRING_WIDTH}}" for round_num in range(self.num_picks)])
+        title_line = f"{'Name':^{max_len_name + 1}}|{round_title_str}"
+        title_line = f"```\n{title_line}\n{'-' * len(title_line)}\n"
 
         pick_table_str = f"{title_line}"
         for drafter_idx in range(num_drafters):
@@ -210,7 +227,9 @@ class EventDraft:
         self.current_msgs.append(pick_table_msg)
 
         teams_left_str = "Teams Left:\n" + "\n".join(
-            [f'{team_num} - {self.team_name_dict[team_num]}' if team_num in self.teams_left else f'~~{team_num} - {self.team_name_dict[team_num]}~~' for team_num in self.all_teams])
+            [
+                f'{team_num} - {self.team_name_dict[team_num]}' if team_num in self.teams_left else f'~~{team_num} - {self.team_name_dict[team_num]}~~'
+                for team_num in self.all_teams])
         teams_left_msg = await self.draft_channel.send(teams_left_str)
         self.current_msgs.append(teams_left_msg)
         for self.pick_num in range(start_pick, self.num_picks * num_drafters):
@@ -220,10 +239,12 @@ class EventDraft:
                 drafter_idx = (num_drafters - 1) - drafter_idx
             drafter_name = self.drafter_names[drafter_idx]
 
+            deadline = pick_deadlines[self.pick_num - start_pick]
+
             self.current_drafter_user = discord.utils.get(self.draft_channel.members, nick=drafter_name)
             logger.debug(f"{self.draft_channel.members=} {self.current_drafter_user.name}")
             current_msg = await self.draft_channel.send(
-                f'Current drafter is {self.current_drafter_user.nick}')
+                f'Current drafter is {self.current_drafter_user.nick}, deadline is **{deadline.strftime("%a. %b %d %I:%M%p")}**')
             self.current_msgs.append(current_msg)
 
             dropdown_view = DropdownView(self.teams_left, [self.team_name_dict[team] for team in self.teams_left])
@@ -231,13 +252,14 @@ class EventDraft:
             next_pick_too = ""
             if self.pick_num % num_drafters == num_drafters - 1 and round_num != self.num_picks - 1:
                 next_pick_too = ", you are also picking again next"
+
             # Sending a message containing our view
             pick_msg = await self.current_drafter_user.send(
-                f'It is your pick for {self.event_page.title} (round #{round_num + 1}){next_pick_too}:',
+                f'It is your pick for {self.event_page.title} (round #{round_num + 1}){next_pick_too}\nDeadline is **{deadline.strftime("%a. %b %d %I:%M%p")}**:',
                 view=dropdown_view)
             self.current_msgs.append(pick_msg)
             dropdown_view.callback_futures.append(self.stop_future)
-            timeout = asyncio.create_task(self.pick_timeout(pick_deadlines[self.pick_num-start_pick]))
+            timeout = asyncio.create_task(self.pick_timeout(deadline))
             dropdown_view.callback_futures.append(timeout)
             # Wait for value from one of the team pickers' callback
             try:
@@ -248,26 +270,35 @@ class EventDraft:
                 await pick_msg.delete()
                 logger.debug(f"Message deleted")
                 sys.exit()
+
+            for msg in self.reminder_msgs:  # Delete pick deadline reminder messages
+                await msg.delete()
+
             if self.stop_future in done:
                 print("Stopping draft")
                 logger.info("Stopping draft")
 
                 # TODO Add cleanup function
                 await self.cleanup_messages()
+                timeout.cancel()
                 # await pick_msg.delete()
                 # await draft_order_msg.delete()
                 # await teams_left_msg.delete()
                 # await current_msg.delete()
                 return
             picked_team_num = list(done)[0].result()
+
+            # If automatic timeout happened
             if timeout in done:
+                await self.current_drafter_user.send("Time is up!", delete_after=60)
                 await pick_msg.edit(
-                    content=f"Time is up! Automatically picked team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
+                    content=f"Automatically picked team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
                     view=None)
 
-                await self.draft_channel.send(f'Time is up, {self.current_drafter_user.nick} has automatically picked team {picked_team_num}')
+                await self.draft_channel.send(
+                    f'Time is up, {self.current_drafter_user.nick} has automatically picked team {picked_team_num}')
             else:
-
+                timeout.cancel()
                 # Replace picker so multiple teams cannot be selected and to provide feedback of successful pick
                 await pick_msg.edit(
                     content=f"You selected team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
@@ -314,7 +345,17 @@ class EventDraft:
         self.stop_future.set_result("Stop")
 
     async def pick_timeout(self, deadline):
+        self.reminder_msgs = []
+        reminders = 0
         while datetime.datetime.now() < deadline:
+            if len(self.reminder_msgs) == 0 and datetime.datetime.now() >= deadline - datetime.timedelta(minutes=120): # First reminder, 2 hours
+                reminder = await self.current_drafter_user.send(f"You have 2 hours left to pick for {self.event_page.title}!")
+                self.reminder_msgs.append(reminder)
+                reminders += 1
+            elif len(self.reminder_msgs) == 1 and datetime.datetime.now() >= deadline - datetime.timedelta(minutes=30): # Second reminder, 30 minutes
+                reminder = await self.current_drafter_user.send(f"You have 30 minutes left to pick for {self.event_page.title}!")
+                self.reminder_msgs.append(reminder)
+                reminders += 1
             await asyncio.sleep(1)
         return random.choice(self.teams_left)
 
