@@ -379,7 +379,7 @@ class ButtonGrid:
         self.views = []
 
         for i, team_index in enumerate(
-                range(0, len(teams_list), 25)):  # 25 is the max number of options in a dropdown on Discord
+                range(0, len(teams_list), 25)):  # 25 is the max number of buttons in a message on Discord
             # Adds the dropdown to our view object.
             button_row_list = []
             row_view = discord.ui.View(timeout=None)
@@ -408,7 +408,8 @@ class TeamButton(discord.ui.Button):
 
     def __init__(self, team_num, picked, team_name, current_user: discord.Member):  # TODO Rework dependency on current user
         super(TeamButton, self).__init__(style=discord.ButtonStyle.red if picked else discord.ButtonStyle.green,
-                                         label=f"{team_num:>4}\n{team_name}", disabled=picked)
+                                         label=f"{team_num:>4}", disabled=picked)
+        # \n{team_name}
         self.team_num = team_num
         self.picked = picked
         self.current_user = current_user
