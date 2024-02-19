@@ -87,7 +87,7 @@ class EventDraft:
         self.pick_num = 0
         self.current_drafter_user: discord.Member = None
         self.stop_future = asyncio.get_event_loop().create_future()
-        self.skip_button = SkipButton()
+        self.skip_button = SkipButton(self)
         self.draft_start_time = None
         self.reminder_msgs = []
 
@@ -130,7 +130,7 @@ class EventDraft:
         start_active_end_datetime = datetime.datetime.combine(self.draft_start_time.date(), ACTIVE_HOURS_END_TIME)
         end_active_start_datetime = datetime.datetime.combine(self.draft_end_datetime.date(), ACTIVE_HOURS_START_TIME)
         end_active_end_datetime = datetime.datetime.combine(self.draft_end_datetime.date(), ACTIVE_HOURS_END_TIME)
-        self.draft_end_datetime = end_active_end_datetime
+        self.draft_end_datetime = min(end_active_end_datetime, self.draft_end_datetime)
 
         day_lengths = []
         start_day_start_time = min(start_active_end_datetime, max(start_active_start_datetime, self.draft_start_time))
@@ -198,7 +198,7 @@ class EventDraft:
 
         time_msg_str = f"Draft Start Time: {self.draft_start_time.strftime('%a. %b %d %I:%M%p')}\n"
         time_msg_str += f"Draft End Time: {self.draft_end_datetime.strftime('%a. %b %d %I:%M%p')}\n"
-        time_msg_str += f"Minimum Time Limit per Pick: {time_per_pick.seconds // 3600}hr {(time_per_pick.seconds % 3600) // 60:0>2}min\n"
+        time_msg_str += f"Minimum Time Limit per Pick:  {(str(time_per_pick.days) + 'd ') if time_per_pick.days > 0 else ''}{time_per_pick.seconds // 3600}hr {(time_per_pick.seconds % 3600) // 60:0>2}min\n"
 
         pick_cell_str_table = defaultdict(lambda: [])
         pick_num = 0
@@ -287,6 +287,7 @@ class EventDraft:
                 continue
 
             deadline = pick_deadlines[pick_idx]
+            # deadline = datetime.datetime.now() + datetime.timedelta(hours=12)
 
             self.current_drafter_user = discord.utils.get(self.draft_channel.members, nick=drafter_name)
 
@@ -332,6 +333,8 @@ class EventDraft:
 
             current_drafter_picked = False
 
+            logger.debug(f"Keys: {draft_pick_msgs.keys()}")
+
             if self.stop_future in done:
                 print("Stopping draft")
                 logger.info("Stopping draft")
@@ -346,9 +349,12 @@ class EventDraft:
                 return
             elif self.skip_button.skip_future in done:
                 logger.info(f"Skipping {drafter_name}")
-                await self.draft_channel.send(f"Skipping {drafter_name}")
+                # await self.draft_channel.send(f"Skipping {drafter_name} and allowing next drafter to start but you may still pick")
                 cutoff.cancel()
                 self.skip_button.reset_future()
+
+                await draft_pick_msgs[self.pick_num].edit(
+                    content=f'{self.current_drafter_user.nick}\'s #{round_num + 1} pick was skipped but may still pick')
 
                 self.pick_num += 1
                 move_to_next_pick = True
@@ -359,14 +365,14 @@ class EventDraft:
                 # await pick_msg.edit(
                 #     content=f"Automatically picked team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
                 #     view=None)
-                logger.info(f"Skipping {self.current_drafter_user.nick}")
-                await self.draft_channel.send(f"Skipping {drafter_name}")
+                logger.info(f"Timeout skipping {self.current_drafter_user.nick}")
+                await self.draft_channel.send(f"Time is up, {self.current_drafter_user.nick}! Allowing next drafter to pick", delete_after=300)
 
                 self.skip_button.reset_future()
 
-                self.pick_num += 1
                 await draft_pick_msgs[self.pick_num].edit(
-                    f'Time is up, {self.current_drafter_user.nick}! Allowing next drafter to start but you may still pick.')
+                    content=f'{self.current_drafter_user.nick}\'s #{round_num + 1} pick was skipped but may still pick')
+                self.pick_num += 1
                 move_to_next_pick = True
 
 
@@ -378,25 +384,35 @@ class EventDraft:
                 logger.debug(f"Current drafters: {current_drafters}, picker {user_picked}")
                 current_drafters.remove(user_picked)
 
-                for idx in range(len(grid_msgs)):
-                    self.current_msgs.pop()  # Remove grid messages from stack
-                self.current_msgs.pop()  # Remove previous drafter message from stack
+                # for msg in grid_msgs:
+                #     self.current_msgs.remove(msg)  # Remove grid messages from stack
+                # self.current_msgs.r
+                # self.current_msgs.pop()  # Remove previous drafter message from stack
 
-                if user_picked == self.current_drafter_user:  # Current drafter
+                draft_pick_round_idx = self.draft_picks[user_picked.nick].index(None) # TODO May be unnecessarily complex for common case of current drafter picking
+                if user_picked == self.current_drafter_user and draft_pick_round_idx == round_num:  # Current drafter
                     draft_pick_drafter_idx = drafter_idx
                     draft_pick_num = self.pick_num
-                    draft_pick_round_idx = round_num
                     move_to_next_pick = True
                     logger.debug(f"Current drafter picked {draft_pick_drafter_idx} {draft_pick_num} {draft_pick_round_idx}")
                 else:  # Skipped drafter
+                    # round_num = self.pick_num // num_drafters
+                    # drafter_idx = self.pick_num % num_drafters
+                    # if round_num % 2 == 1:
+                    #     drafter_idx = (num_drafters - 1) - drafter_idx
+
                     draft_pick_drafter_idx = self.drafter_names.index(user_picked.nick)
-                    draft_pick_round_idx = self.draft_picks[user_picked.nick].index(None)
-                    draft_pick_num = draft_pick_round_idx * num_drafters + draft_pick_drafter_idx
+                    draft_pick_drafter_idx_pick_num = draft_pick_drafter_idx
+                    if draft_pick_round_idx % 2 == 1:
+                        draft_pick_drafter_idx_pick_num = (num_drafters - 1) - draft_pick_drafter_idx_pick_num
+                    draft_pick_num = draft_pick_round_idx * num_drafters + draft_pick_drafter_idx_pick_num  # TODO Maybe could be replaced/removed
                     move_to_next_pick = False
-                    logger.debug(f"Skipped drafter picked {draft_pick_drafter_idx} {draft_pick_num} {draft_pick_round_idx}")
+                    logger.debug(f"Skipped drafter picked {draft_pick_drafter_idx} {draft_pick_num} {draft_pick_round_idx} {draft_pick_drafter_idx_pick_num}")
                     # Delete current drafter's message so that there will not be a duplicate when they get re-pinged
+                    self.current_msgs.remove(draft_pick_msgs[self.pick_num])
                     await draft_pick_msgs[self.pick_num].delete()
 
+                self.current_msgs.remove(draft_pick_msgs[draft_pick_num])
                 # # Replace picker so multiple teams cannot be selected and to provide feedback of successful pick
                 # await pick_msg.edit(
                 #     content=f"You selected team **{picked_team_num}** for {self.event_page.title} round #{round_num + 1}",
@@ -435,6 +451,7 @@ class EventDraft:
 
             for msg in grid_msgs:
                 await msg.delete()
+                self.current_msgs.remove(msg)
             grid_msgs.clear()
 
             # TODO clean up futures
@@ -445,6 +462,7 @@ class EventDraft:
                 pick_idx += 1
                 pick_num += 1
         logger.info("Draft has finished!")
+        await skip_button_msg.delete()
         await self.draft_channel.send(
             f'@everyone Draft for {self.event_page.title} has finished!\nSee completed event page below:\n{self.event_page.url}')
 
@@ -512,9 +530,10 @@ class ButtonGrid:
 
 
 class SkipButton(discord.ui.Button):
-    def __init__(self):  # TODO Rework dependency on current user
+    def __init__(self, draft: EventDraft):  # TODO Rework dependency on current user
         super(SkipButton, self).__init__(style=discord.ButtonStyle.danger, label=f"Skip Current Drafter")
         self.skip_future = asyncio.get_event_loop().create_future()
+        self.draft = draft
 
     async def callback(self, interaction: discord.Interaction):
 
@@ -524,7 +543,7 @@ class SkipButton(discord.ui.Button):
             return
 
         logger.info(f"Skipping current drafter")
-        interaction.response.pong()
+        await interaction.response.send_message(f"Skipping {self.draft.current_drafter_user.nick} and allowing next drafter to pick", delete_after=300)
         self.skip_future.set_result(True)
 
     def reset_future(self):
@@ -536,8 +555,10 @@ class TeamButton(discord.ui.Button):
 
     def __init__(self, team_num, picked, team_name,
                  current_users: list[discord.Member]):  # TODO Rework dependency on current user
+        label = f"{team_num:>4}"
+        # label = label.replace(" "," ")
         super(TeamButton, self).__init__(style=discord.ButtonStyle.red if picked else discord.ButtonStyle.green,
-                                         label=f"{team_num:>4}", disabled=picked)
+                                         label=label, disabled=picked)
         # \n{team_name}
         self.team_num = team_num
         self.picked = picked
@@ -551,7 +572,7 @@ class TeamButton(discord.ui.Button):
 
         # await interaction.delete_original_response()
         self.picked = True
-        print(f"Picked {self.team_num}")
+        logger.debug(f"Picked {self.team_num}")
         self.click_team_future.set_result((self.team_num, interaction.user))
 
     def reset_future(self):
