@@ -11,7 +11,7 @@ teams_top_row = 4
 teams_bot_row = 100
 EVENT_ID_CELL = 'C2'
 
-client = pygsheets.authorize(service_account_file="keys/fantasy-first-test-372522-4d15a60bbdcb.json")
+client = pygsheets.authorize(service_account_file="keys/fantasy-first-test.json.json")
 
 sheet = client.open('2023 FF')
 all_pages = sheet.worksheets()
