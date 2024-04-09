@@ -6,10 +6,10 @@
 - [X] Bot admins only
 - [X] Resync google sheet
 - [X] Bot icon
-- [ ] Teams left list, master/distributed
-- [ ] Skip
+- [X] Teams left list, master/distributed
+- [X] Skip
 
-- [ ] Table of picks
+- [X] Table of picks
 - [X] Capability to resume draft?
 - [ ] Automatic pick ordering?
 
