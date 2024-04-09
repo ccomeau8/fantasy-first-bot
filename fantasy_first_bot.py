@@ -52,7 +52,6 @@ DATE_STRING_WIDTH = 21
 PICK_DEADLINE_SNAP_INTERVAL = 15  # Snaps picks to 15 min intervals, ex. 3:08 -> 3:15
 
 
-
 class EventDraft:
     def __init__(self, event_id: str, event_page: pygsheets.Worksheet, draft_interaction: discord.Interaction):
         self.current_msgs: typing.List[discord.Message] = []
@@ -101,10 +100,10 @@ class EventDraft:
         self.draft_start_time = datetime.datetime.now().astimezone().astimezone(DRAFT_TIMEZONE)  # TODO Deal with timezones
         if (self.draft_start_time > self.draft_end_datetime):
             # Draft started after deadline, invalid
-            await self.draft_interaction.response.send_message(f"Deadline for **{self.event_id}** has passed ({self.draft_end_datetime.strftime('%a. %b %d %Y %I:%M%p')})", ephemeral=True)
+            await self.draft_interaction.followup.send(content=f"Deadline for **{self.event_id}** has passed ({self.draft_end_datetime.strftime('%a. %b %d %Y %I:%M%p')})", ephemeral=True)
             return
 
-        await self.draft_interaction.response.send_message(f'Starting Fantasy FIRST draft for event **{self.event_id}**')
+        await self.draft_interaction.followup.send(content=f'Starting Fantasy FIRST draft for event **{self.event_id}**')
 
         start_pick = None
         for scan_pick in range(self.num_picks * num_drafters):
@@ -852,7 +851,7 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
-client = pygsheets.authorize(service_account_file="keys/fantasy-first-test-372522-4d15a60bbdcb.json")
+client = pygsheets.authorize(service_account_file="keys/fantasy-first-test.json")
 sheet = client.open(sheet_name)
 all_pages = sheet.worksheets()
 master_sheet: pygsheets.Worksheet = sheet.worksheet("title", "Master Score Sheet")
@@ -911,11 +910,12 @@ async def start_draft(interaction: discord.Interaction, event_id: Literal[tuple(
 
     event_page = event_map[event_id]
 
+    await interaction.response.defer()
     # Handle sheet data loading and draft var resets
     try:
         draft = EventDraft(event_id, event_page, interaction)
     except LookupError as err:
-        await interaction.response.send_message(str(err), ephemeral=True)
+        await interaction.followup.send(content=str(err), ephemeral=True)
         return
 
     bot.current_drafts[event_id] = draft
